@@ -1,5 +1,6 @@
 import os
 import urllib.parse
+from functools import wraps
 from flask import Flask, request, jsonify, make_response
 
 try:
@@ -25,7 +26,7 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
 
-# ฟังก์ชันดึงค่า Env แบบปลอดภัย ป้องกัน AttributeError กรณีตัวแปรใน Vercel ยังไม่ถูกโหลด
+# ฟังก์ชันดึงค่า Env แบบปลอดภัย
 def get_env_safe(keys, default=""):
     for k in keys:
         val = os.getenv(k)
@@ -38,6 +39,9 @@ DB_PORT = get_env_safe(["DB_PORT_TIDB", "DB_PORT"], "4000")
 DB_USER = get_env_safe(["DB_USERNAME_TIDB", "DB_USER"], "2d9jdrvr2SNSUNq.reader_user")
 DB_PASSWORD = get_env_safe(["DB_PASSWORD_TIDB", "DB_PASSWORD"], "StrongPassword123!")
 DB_NAME = get_env_safe(["DB_DATABASE_TIDB", "DB_NAME"], "db_ultimate")
+
+# กำหนด Bearer Token สำหรับยืนยันตัวตน (สามารถตั้งใน Vercel Env: API_BEARER_TOKEN ได้)
+API_BEARER_TOKEN = get_env_safe(["API_BEARER_TOKEN", "BEARER_TOKEN", "AUTH_TOKEN"], "ultimate_secret_token_2026")
 
 escaped_password = urllib.parse.quote_plus(DB_PASSWORD)
 DATABASE_URL = f"mysql+pymysql://{DB_USER}:{escaped_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
@@ -57,18 +61,55 @@ else:
     engine_init_error = None
 
 
+# ==============================================================================
+# Decorator สำหรับตรวจสอบ Bearer Token
+# ==============================================================================
+def require_bearer_token(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get("Authorization")
+        if not auth_header:
+            return jsonify({
+                "status": "error",
+                "message": "Missing Authorization header. Expected format: 'Authorization: Bearer <TOKEN>'"
+            }), 401
+
+        parts = auth_header.split(" ")
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            return jsonify({
+                "status": "error",
+                "message": "Invalid Authorization header format. Expected 'Bearer <TOKEN>'"
+            }), 401
+
+        token = parts[1]
+        if token != API_BEARER_TOKEN:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid or unauthorized Bearer Token"
+            }), 403
+
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+# ==============================================================================
+# Endpoints
+# ==============================================================================
+
 @app.route("/", methods=["GET"])
 def root():
     return jsonify({
-        "service": "Ultimate Products REST API",
+        "service": "Ultimate Products REST API (Secured with Bearer Token)",
         "status": "online",
+        "auth_type": "Bearer Token",
         "connected_db": DB_NAME,
+        "default_token_sample": API_BEARER_TOKEN,
         "endpoints": {
-            "health": "/api/health",
+            "public_health": "/api/health",
             "cron_keep_active": "/api/cron",
-            "products_list": "/api/products?limit=20&offset=0",
-            "product_detail": "/api/products/<order_id>",
-            "summary": "/api/summary"
+            "protected_products_list": "/api/products?limit=20&offset=0",
+            "protected_product_detail": "/api/products/<order_id>",
+            "protected_summary": "/api/summary"
         }
     })
 
@@ -87,7 +128,7 @@ def health():
 
 @app.route("/api/cron", methods=["GET"])
 def cron_keep_active():
-    """เส้น API สำหรับ Cron Job ยิงเพื่อรักษาความ Active ป้องกันระบบ Pause"""
+    """เส้น API สำหรับ Cron Job ยิงเพื่อรักษาความ Active (Public เพื่อให้ Cron ยิงได้สะดวก)"""
     if engine is None:
         return jsonify({"status": "error", "error": engine_init_error}), 500
     try:
@@ -103,37 +144,38 @@ def cron_keep_active():
 
 
 @app.route("/api/products", methods=["GET"])
+@require_bearer_token
 def get_products():
     if engine is None:
         return jsonify({"status": "error", "message": engine_init_error}), 500
-    limit = min(int(request.args.get("limit", 20)), 100)
-    offset = int(request.args.get("offset", 0))
-    status = request.args.get("status")
-    item_name = request.args.get("item_name")
-
-    where_clauses = []
-    params = {"limit": limit, "offset": offset}
-
-    if status:
-        where_clauses.append("status = :status")
-        params["status"] = status
-    if item_name:
-        where_clauses.append("item_name LIKE :item_name")
-        params["item_name"] = f"%{item_name}%"
-
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-
-    query = f"""
-        SELECT order_id, customer_id, item_name, quantity, unit_price_thb, status, order_date
-        FROM products
-        {where_sql}
-        ORDER BY order_id ASC
-        LIMIT :limit OFFSET :offset
-    """
-
-    count_query = f"SELECT COUNT(*) FROM products {where_sql}"
-
     try:
+        limit = min(int(request.args.get("limit", 20)), 100)
+        offset = int(request.args.get("offset", 0))
+        status = request.args.get("status")
+        item_name = request.args.get("item_name")
+
+        where_clauses = []
+        params = {"limit": limit, "offset": offset}
+
+        if status:
+            where_clauses.append("status = :status")
+            params["status"] = status
+        if item_name:
+            where_clauses.append("item_name LIKE :item_name")
+            params["item_name"] = f"%{item_name}%"
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        query = f"""
+            SELECT order_id, customer_id, item_name, quantity, unit_price_thb, status, order_date
+            FROM products
+            {where_sql}
+            ORDER BY order_id ASC
+            LIMIT :limit OFFSET :offset
+        """
+
+        count_query = f"SELECT COUNT(*) FROM products {where_sql}"
+
         with engine.connect() as conn:
             total_filtered = conn.execute(text(count_query), params).scalar()
             result = conn.execute(text(query), params)
@@ -151,6 +193,7 @@ def get_products():
 
 
 @app.route("/api/products/<order_id>", methods=["GET"])
+@require_bearer_token
 def get_product_by_id(order_id):
     if engine is None:
         return jsonify({"status": "error", "message": engine_init_error}), 500
@@ -173,6 +216,7 @@ def get_product_by_id(order_id):
 
 
 @app.route("/api/summary", methods=["GET"])
+@require_bearer_token
 def get_summary():
     if engine is None:
         return jsonify({"status": "error", "message": engine_init_error}), 500
