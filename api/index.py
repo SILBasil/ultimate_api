@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify, make_response
 
 try:
     from flask_cors import CORS
+
     has_cors = True
 except ImportError:
     has_cors = False
@@ -19,12 +20,14 @@ app = Flask(__name__)
 if has_cors:
     CORS(app)
 
+
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
+
 
 # ฟังก์ชันดึงค่า Env แบบปลอดภัย
 def get_env_safe(keys, default=""):
@@ -34,31 +37,39 @@ def get_env_safe(keys, default=""):
             return str(val).strip("'\"")
     return default
 
-DB_HOST = get_env_safe(["DB_HOST_TIDB", "DB_HOST"], "gateway01.ap-southeast-1.prod.aws.tidbcloud.com")
+
+DB_HOST = get_env_safe(["DB_HOST_TIDB", "DB_HOST"])
 DB_PORT = get_env_safe(["DB_PORT_TIDB", "DB_PORT"], "4000")
-DB_USER = get_env_safe(["DB_USERNAME_TIDB", "DB_USER"], "2d9jdrvr2SNSUNq.reader_user")
-DB_PASSWORD = get_env_safe(["DB_PASSWORD_TIDB", "DB_PASSWORD"], "StrongPassword123!")
-DB_NAME = get_env_safe(["DB_DATABASE_TIDB", "DB_NAME"], "db_ultimate")
+DB_USER = get_env_safe(["DB_USERNAME_TIDB", "DB_USER"])
+DB_PASSWORD = get_env_safe(["DB_PASSWORD_TIDB", "DB_PASSWORD"])
+DB_NAME = get_env_safe(["DB_DATABASE_TIDB", "DB_NAME"])
 
-# กำหนด Bearer Token สำหรับยืนยันตัวตน (สามารถตั้งใน Vercel Env: API_BEARER_TOKEN ได้)
-API_BEARER_TOKEN = get_env_safe(["API_BEARER_TOKEN", "BEARER_TOKEN", "AUTH_TOKEN"], "ultimate_secret_token_2026")
-
-escaped_password = urllib.parse.quote_plus(DB_PASSWORD)
-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{escaped_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# กำหนด Bearer Token สำหรับยืนยันตัวตน (ตั้งค่าใน .env หรือ Vercel Env: API_BEARER_TOKEN)
+API_BEARER_TOKEN = get_env_safe(["API_BEARER_TOKEN", "BEARER_TOKEN", "AUTH_TOKEN"])
 
 # สร้าง SQLAlchemy Engine พร้อม SSL CA จาก certifi
-try:
-    engine = create_engine(
-        DATABASE_URL,
-        connect_args={"ssl": {"ca": certifi.where()}},
-        pool_recycle=300,
-        pool_pre_ping=True
+if DB_HOST and DB_USER and DB_PASSWORD and DB_NAME:
+    escaped_password = urllib.parse.quote_plus(DB_PASSWORD)
+    DATABASE_URL = (
+        f"mysql+pymysql://{DB_USER}:{escaped_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     )
-except Exception as err:
-    engine = None
-    engine_init_error = str(err)
+    try:
+        engine = create_engine(
+            DATABASE_URL,
+            connect_args={"ssl": {"ca": certifi.where()}},
+            pool_recycle=300,
+            pool_pre_ping=True,
+        )
+    except Exception as err:
+        engine = None
+        engine_init_error = str(err)
+    else:
+        engine_init_error = None
 else:
-    engine_init_error = None
+    engine = None
+    engine_init_error = (
+        "Database credentials are not configured in environment variables."
+    )
 
 
 # ==============================================================================
@@ -67,28 +78,55 @@ else:
 def require_bearer_token(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        if not API_BEARER_TOKEN:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Server authorization token is not configured.",
+                    }
+                ),
+                500,
+            )
+
         auth_header = request.headers.get("Authorization")
         if not auth_header:
-            return jsonify({
-                "status": "error",
-                "message": "Missing Authorization header. Expected format: 'Authorization: Bearer <TOKEN>'"
-            }), 401
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Missing Authorization header. Expected format: 'Authorization: Bearer <TOKEN>'",
+                    }
+                ),
+                401,
+            )
 
         parts = auth_header.split(" ")
         if len(parts) != 2 or parts[0].lower() != "bearer":
-            return jsonify({
-                "status": "error",
-                "message": "Invalid Authorization header format. Expected 'Bearer <TOKEN>'"
-            }), 401
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Invalid Authorization header format. Expected 'Bearer <TOKEN>'",
+                    }
+                ),
+                401,
+            )
 
         token = parts[1]
         if token != API_BEARER_TOKEN:
-            return jsonify({
-                "status": "error",
-                "message": "Invalid or unauthorized Bearer Token"
-            }), 403
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "Invalid or unauthorized Bearer Token",
+                    }
+                ),
+                403,
+            )
 
         return f(*args, **kwargs)
+
     return decorated_function
 
 
@@ -96,22 +134,23 @@ def require_bearer_token(f):
 # Endpoints
 # ==============================================================================
 
+
 @app.route("/", methods=["GET"])
 def root():
-    return jsonify({
-        "service": "Ultimate Products REST API (Secured with Bearer Token)",
-        "status": "online",
-        "auth_type": "Bearer Token",
-        "connected_db": DB_NAME,
-        "default_token_sample": API_BEARER_TOKEN,
-        "endpoints": {
-            "public_health": "/api/health",
-            "cron_keep_active": "/api/cron",
-            "protected_products_list": "/api/products?limit=20&offset=0",
-            "protected_product_detail": "/api/products/<order_id>",
-            "protected_summary": "/api/summary"
+    return jsonify(
+        {
+            "service": "Ultimate Products REST API (Secured with Bearer Token)",
+            "status": "online",
+            "auth_type": "Bearer Token",
+            "endpoints": {
+                "public_health": "/api/health",
+                "cron_keep_active": "/api/cron",
+                "protected_products_list": "/api/products?limit=20&offset=0",
+                "protected_product_detail": "/api/products/<order_id>",
+                "protected_summary": "/api/summary",
+            },
         }
-    })
+    )
 
 
 @app.route("/api/health", methods=["GET"])
@@ -121,7 +160,7 @@ def health():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return jsonify({"status": "healthy", "database": "connected", "db_user": DB_USER}), 200
+        return jsonify({"status": "healthy", "database": "connected"}), 200
     except Exception as e:
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
 
@@ -134,11 +173,16 @@ def cron_keep_active():
     try:
         with engine.connect() as conn:
             result = conn.execute(text("SELECT COUNT(*) FROM products")).scalar()
-        return jsonify({
-            "status": "active",
-            "message": "Keep-alive ping successful",
-            "total_products_in_db": result
-        }), 200
+        return (
+            jsonify(
+                {
+                    "status": "active",
+                    "message": "Keep-alive ping successful",
+                    "total_products_in_db": result,
+                }
+            ),
+            200,
+        )
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
@@ -181,13 +225,18 @@ def get_products():
             result = conn.execute(text(query), params)
             products = [dict(row._mapping) for row in result.fetchall()]
 
-        return jsonify({
-            "status": "success",
-            "total": total_filtered,
-            "limit": limit,
-            "offset": offset,
-            "data": products
-        }), 200
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "total": total_filtered,
+                    "limit": limit,
+                    "offset": offset,
+                    "data": products,
+                }
+            ),
+            200,
+        )
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -201,16 +250,18 @@ def get_product_by_id(order_id):
         with engine.connect() as conn:
             result = conn.execute(
                 text("SELECT * FROM products WHERE order_id = :order_id"),
-                {"order_id": order_id}
+                {"order_id": order_id},
             ).fetchone()
 
             if not result:
-                return jsonify({"status": "error", "message": "Product / Order not found"}), 404
+                return (
+                    jsonify(
+                        {"status": "error", "message": "Product / Order not found"}
+                    ),
+                    404,
+                )
 
-            return jsonify({
-                "status": "success",
-                "data": dict(result._mapping)
-            }), 200
+            return jsonify({"status": "success", "data": dict(result._mapping)}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -227,11 +278,16 @@ def get_summary():
                 text("SELECT status, COUNT(*) as count FROM products GROUP BY status")
             ).fetchall()
 
-        return jsonify({
-            "status": "success",
-            "total_records": total_count,
-            "status_distribution": {row[0]: row[1] for row in status_dist}
-        }), 200
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "total_records": total_count,
+                    "status_distribution": {row[0]: row[1] for row in status_dist},
+                }
+            ),
+            200,
+        )
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
