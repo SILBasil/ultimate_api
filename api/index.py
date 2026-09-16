@@ -29,7 +29,7 @@ def add_cors_headers(response):
     return response
 
 
-# ฟังก์ชันดึงค่า Env แบบปลอดภัย
+# Helper to get environment variables safely
 def get_env_safe(keys, default=""):
     for k in keys:
         val = os.getenv(k)
@@ -44,10 +44,10 @@ DB_USER = get_env_safe(["DB_USERNAME_TIDB", "DB_USER"])
 DB_PASSWORD = get_env_safe(["DB_PASSWORD_TIDB", "DB_PASSWORD"])
 DB_NAME = get_env_safe(["DB_DATABASE_TIDB", "DB_NAME"])
 
-# กำหนด Bearer Token สำหรับยืนยันตัวตน (ตั้งค่าใน .env หรือ Vercel Env: API_BEARER_TOKEN)
+# Bearer Token Authentication
 API_BEARER_TOKEN = get_env_safe(["API_BEARER_TOKEN", "BEARER_TOKEN", "AUTH_TOKEN"])
 
-# สร้าง SQLAlchemy Engine พร้อม SSL CA จาก certifi
+# SQLAlchemy Engine with SSL CA
 if DB_HOST and DB_USER and DB_PASSWORD and DB_NAME:
     escaped_password = urllib.parse.quote_plus(DB_PASSWORD)
     DATABASE_URL = (
@@ -73,7 +73,7 @@ else:
 
 
 # ==============================================================================
-# Decorator สำหรับตรวจสอบ Bearer Token
+# Decorator for Bearer Token Authentication
 # ==============================================================================
 def require_bearer_token(f):
     @wraps(f)
@@ -139,7 +139,7 @@ def require_bearer_token(f):
 def root():
     return jsonify(
         {
-            "service": "Ultimate Products REST API (Secured with Bearer Token)",
+            "service": "Enterprise Retail & Products REST API",
             "status": "online",
             "auth_type": "Bearer Token",
             "endpoints": {
@@ -148,6 +148,8 @@ def root():
                 "protected_products_list": "/api/products?limit=20&offset=0",
                 "protected_product_detail": "/api/products/<order_id>",
                 "protected_summary": "/api/summary",
+                "branch_01_sales": "/api/v1/branches/1/sales?page=1&limit=50",
+                "branch_02_sales": "/api/v1/branches/2/sales?page=1&limit=50",
             },
         }
     )
@@ -167,7 +169,6 @@ def health():
 
 @app.route("/api/cron", methods=["GET"])
 def cron_keep_active():
-    """เส้น API สำหรับ Cron Job ยิงเพื่อรักษาความ Active (Public เพื่อให้ Cron ยิงได้สะดวก)"""
     if engine is None:
         return jsonify({"status": "error", "error": engine_init_error}), 500
     try:
@@ -284,6 +285,99 @@ def get_summary():
                     "status": "success",
                     "total_records": total_count,
                     "status_distribution": {row[0]: row[1] for row in status_dist},
+                }
+            ),
+            200,
+        )
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ==============================================================================
+# RESTful Branch Sales Endpoints (Standard RESTful Resource Naming)
+# Format: /api/v1/branches/{branch_id}/sales
+# รองรับ Pagination (page, limit) โดยไม่ใส่ total_pages
+# ==============================================================================
+
+
+@app.route("/api/v1/branches/1/sales", methods=["GET"])
+@require_bearer_token
+def get_branch_01_sales():
+    if engine is None:
+        return jsonify({"status": "error", "message": engine_init_error}), 500
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+        offset = (page - 1) * limit
+
+        query = text(
+            """
+            SELECT transaction_date, branch_id, branch_name, product_id,
+                   product_name, category, CAST(unit_price AS FLOAT) AS unit_price,
+                   quantity_sold, CAST(total_amount AS FLOAT) AS total_amount,
+                   CAST(profit AS FLOAT) AS profit
+            FROM branch_01_sales
+            ORDER BY id ASC
+            LIMIT :limit OFFSET :offset
+            """
+        )
+
+        with engine.connect() as conn:
+            result = conn.execute(query, {"limit": limit, "offset": offset})
+            rows = [dict(row._mapping) for row in result.fetchall()]
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "branch_id": "BR-001",
+                    "branch_name": "สาขาสยามพารากอน",
+                    "page": page,
+                    "limit": limit,
+                    "data": rows,
+                }
+            ),
+            200,
+        )
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/v1/branches/2/sales", methods=["GET"])
+@require_bearer_token
+def get_branch_02_sales():
+    if engine is None:
+        return jsonify({"status": "error", "message": engine_init_error}), 500
+    try:
+        page = max(int(request.args.get("page", 1)), 1)
+        limit = min(max(int(request.args.get("limit", 50)), 1), 200)
+        offset = (page - 1) * limit
+
+        query = text(
+            """
+            SELECT transaction_date, branch_id, branch_name, product_id,
+                   product_name, category, CAST(unit_price AS FLOAT) AS unit_price,
+                   quantity_sold, CAST(total_amount AS FLOAT) AS total_amount,
+                   CAST(profit AS FLOAT) AS profit
+            FROM branch_02_sales
+            ORDER BY id ASC
+            LIMIT :limit OFFSET :offset
+            """
+        )
+
+        with engine.connect() as conn:
+            result = conn.execute(query, {"limit": limit, "offset": offset})
+            rows = [dict(row._mapping) for row in result.fetchall()]
+
+        return (
+            jsonify(
+                {
+                    "status": "success",
+                    "branch_id": "BR-002",
+                    "branch_name": "สาขาเซ็นทรัลเวิลด์",
+                    "page": page,
+                    "limit": limit,
+                    "data": rows,
                 }
             ),
             200,
