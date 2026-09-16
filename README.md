@@ -1,6 +1,6 @@
-# Ultimate Products REST API (Flask on Vercel)
+# Ultimate Products & Retail REST API (Flask on Vercel)
 
-REST API สำหรับดึงข้อมูลและจัดการข้อมูลสินค้า/คำสั่งซื้อ เชื่อมต่อกับ TiDB Cloud และ Deploy อยู่บน Vercel Serverless
+REST API สำหรับดึงข้อมูลและจัดการข้อมูลสินค้า/คำสั่งซื้อ และยอดขายสาขา เชื่อมต่อกับ TiDB Cloud และ Deploy อยู่บน Vercel Serverless
 
 - **Base URL:** `https://ultimate-api-alpha.vercel.app`
 
@@ -15,7 +15,7 @@ Authorization: Bearer <API_BEARER_TOKEN>
 
 ---
 
-## 🚀 รายการ Endpoints
+## 🚀 รายการ Endpoints ทั้งหมด
 
 ### 1. Public Endpoints (ไม่ต้องใช้ Token)
 
@@ -27,7 +27,58 @@ Authorization: Bearer <API_BEARER_TOKEN>
 
 ---
 
-### 2. Protected Endpoints (ต้องใช้ Bearer Token)
+### 2. Branch Sales Endpoints (Exam / Data Integration) 🏬
+
+สำหรับดึงข้อมูลยอดขายประจำสาขา โดยใช้ระบบ **Pagination (`page`, `limit`)** ที่ไม่มี `total_pages` ส่งกลับมา เพื่อให้ Client วน Loop ดึงจนกว่า `data` จะเป็น Array ว่าง `[]`
+
+#### 🛍️ สาขา 01 - สยามพารากอน
+- **URL:** `https://ultimate-api-alpha.vercel.app/api/v1/branches/1/sales`
+- **Method:** `GET`
+- **Headers:** `Authorization: Bearer <API_BEARER_TOKEN>`
+- **Query Parameters:**
+  - `page` *(optional)*: เลขหน้าที่ต้องการดึง (default: `1`)
+  - `limit` *(optional)*: จำนวนแถวต่อหน้า (default: `50`, min: `1`, max: `200`)
+- **ตัวอย่าง URL:**
+  - `https://ultimate-api-alpha.vercel.app/api/v1/branches/1/sales?page=1&limit=50`
+
+#### 🛍️ สาขา 02 - เซ็นทรัลเวิลด์
+- **URL:** `https://ultimate-api-alpha.vercel.app/api/v1/branches/2/sales`
+- **Method:** `GET`
+- **Headers:** `Authorization: Bearer <API_BEARER_TOKEN>`
+- **Query Parameters:**
+  - `page` *(optional)*: เลขหน้าที่ต้องการดึง (default: `1`)
+  - `limit` *(optional)*: จำนวนแถวต่อหน้า (default: `50`, min: `1`, max: `200`)
+- **ตัวอย่าง URL:**
+  - `https://ultimate-api-alpha.vercel.app/api/v1/branches/2/sales?page=1&limit=50`
+
+#### 📋 ตัวอย่าง Response Data (`GET /api/v1/branches/1/sales`)
+```json
+{
+  "status": "success",
+  "branch_id": "BR-001",
+  "branch_name": "สาขาสยามพารากอน",
+  "page": 1,
+  "limit": 50,
+  "data": [
+    {
+      "branch_id": "BR-001",
+      "branch_name": "สาขาสยามพารากอน",
+      "category": "เครื่องดื่ม",
+      "product_id": "PROD-001",
+      "product_name": "ชาเขียวมัทฉะพรีเมียม",
+      "profit": 1560.0,
+      "quantity_sold": 52,
+      "total_amount": 3380.0,
+      "transaction_date": "2026-09-01",
+      "unit_price": 65.0
+    }
+  ]
+}
+```
+
+---
+
+### 3. Products Endpoints (Protected) 📦
 
 #### 📦 ดึงรายการสินค้าทั้งหมด (Pagination & Filter)
 - **URL:** `https://ultimate-api-alpha.vercel.app/api/products`
@@ -44,53 +95,59 @@ Authorization: Bearer <API_BEARER_TOKEN>
 #### 🔍 ดึงรายละเอียดสินค้าตาม Order ID
 - **URL:** `https://ultimate-api-alpha.vercel.app/api/products/<order_id>`
 - **Method:** `GET`
-- **ตัวอย่าง URL:** `https://ultimate-api-alpha.vercel.app/api/products/ORD-000001`
+- **ตัวอย่าง URL:** `https://ultimate-api-alpha.vercel.app/api/products/ORD-2026-000001`
 
 #### 📊 สรุปยอดและสถิติข้อมูล
 - **URL:** `https://ultimate-api-alpha.vercel.app/api/summary`
 - **Method:** `GET`
-- **คำอธิบาย:** คืนค่าจำนวน Records ทั้งหมดและสัดส่วนของแต่ละ Status
 
 ---
 
-## 💻 ตัวอย่างการเรียกใช้งาน (Code Examples)
+## 💻 ตัวอย่างการดึงข้อมูล Branch Sales (Python Pagination Loop)
 
-### cURL
-```bash
-# Health Check (Public)
-curl https://ultimate-api-alpha.vercel.app/api/health
+ตัวอย่างสคริปต์ Python สำหรับวนลูปดึงข้อมูลยอดขายสาขาจนครบทุกหน้า:
 
-# Get Products (Protected)
-curl -H "Authorization: Bearer <API_BEARER_TOKEN>" \
-  "https://ultimate-api-alpha.vercel.app/api/products?limit=20&offset=0"
-```
-
-### JavaScript (Fetch)
-```javascript
-const response = await fetch("https://ultimate-api-alpha.vercel.app/api/products?limit=20", {
-  method: "GET",
-  headers: {
-    "Authorization": "Bearer <API_BEARER_TOKEN>"
-  }
-});
-const data = await response.json();
-console.log(data);
-```
-
-### Python (Requests)
 ```python
 import requests
+import pandas as pd
 
-headers = {
-    "Authorization": "Bearer <API_BEARER_TOKEN>"
-}
-response = requests.get(
-    "https://ultimate-api-alpha.vercel.app/api/products",
-    headers=headers,
-    params={"limit": 20, "offset": 0}
-)
-print(response.json())
+API_TOKEN = "a2b6247fb1a5434a4376457f1097dd1caae6315304494e3fe76a7358f1bac441"
+headers = {"Authorization": f"Bearer {API_TOKEN}"}
+
+def fetch_branch_sales(branch_number):
+    url = f"https://ultimate-api-alpha.vercel.app/api/v1/branches/{branch_number}/sales"
+    page = 1
+    limit = 100
+    all_data = []
+
+    while True:
+        res = requests.get(url, headers=headers, params={"page": page, "limit": limit})
+        res.raise_for_status()
+        records = res.json().get("data", [])
+        
+        if not records:
+            break
+            
+        all_data.extend(records)
+        print(f"Branch {branch_number}: Fetched page {page}, got {len(records)} records")
+        page += 1
+
+    return pd.DataFrame(all_data)
+
+# ทดสอบดึงข้อมูลสาขา 1 และ 2
+df_branch_01 = fetch_branch_sales(1)
+df_branch_02 = fetch_branch_sales(2)
+print(f"Branch 01 Total Rows: {len(df_branch_01)}")
+print(f"Branch 02 Total Rows: {len(df_branch_02)}")
 ```
+
+---
+
+## 📬 Postman Collection
+สามารถนำไฟล์ `postman_collection.json` ไปกด **Import** ใน Postman เพื่อทดสอบ API ทั้งหมดได้ทันที
+- **Variables ใน Collection:**
+  - `base_url`: `https://ultimate-api-alpha.vercel.app`
+  - `bearer_token`: Token สำหรับทดสอบ
 
 ---
 
