@@ -1,12 +1,13 @@
 import os
+import urllib.parse
 from flask import Flask, request, jsonify, make_response
 
 try:
     from flask_cors import CORS
-
     has_cors = True
 except ImportError:
     has_cors = False
+
 import certifi
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
@@ -17,7 +18,6 @@ app = Flask(__name__)
 if has_cors:
     CORS(app)
 
-
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -25,48 +25,62 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     return response
 
+# ฟังก์ชันดึงค่า Env แบบปลอดภัย ป้องกัน AttributeError กรณีตัวแปรใน Vercel ยังไม่ถูกโหลด
+def get_env_safe(keys, default=""):
+    for k in keys:
+        val = os.getenv(k)
+        if val is not None and str(val).strip() != "":
+            return str(val).strip("'\"")
+    return default
 
-# ดึงค่าการเชื่อมต่อ Database จาก Environment Variables
-DB_HOST = (os.getenv("DB_HOST_TIDB") or os.getenv("DB_HOST")).strip("'\"")
-DB_PORT = (os.getenv("DB_PORT_TIDB") or os.getenv("DB_PORT")).strip("'\"")
-DB_USER = (os.getenv("DB_USERNAME_TIDB") or os.getenv("DB_USER")).strip("'\"")
-DB_PASSWORD = (os.getenv("DB_PASSWORD_TIDB") or os.getenv("DB_PASSWORD")).strip("'\"")
-DB_NAME = (os.getenv("DB_DATABASE_TIDB") or os.getenv("DB_NAME")).strip("'\"")
+DB_HOST = get_env_safe(["DB_HOST_TIDB", "DB_HOST"], "gateway01.ap-southeast-1.prod.aws.tidbcloud.com")
+DB_PORT = get_env_safe(["DB_PORT_TIDB", "DB_PORT"], "4000")
+DB_USER = get_env_safe(["DB_USERNAME_TIDB", "DB_USER"], "2d9jdrvr2SNSUNq.reader_user")
+DB_PASSWORD = get_env_safe(["DB_PASSWORD_TIDB", "DB_PASSWORD"], "StrongPassword123!")
+DB_NAME = get_env_safe(["DB_DATABASE_TIDB", "DB_NAME"], "db_ultimate")
 
-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+escaped_password = urllib.parse.quote_plus(DB_PASSWORD)
+DATABASE_URL = f"mysql+pymysql://{DB_USER}:{escaped_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-# สร้าง SQLAlchemy Engine พร้อม SSL CA จาก certifi (รองรับทั้ง Linux บน Vercel และ Local)
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"ssl": {"ca": certifi.where()}},
-    pool_recycle=300,
-    pool_pre_ping=True,
-)
+# สร้าง SQLAlchemy Engine พร้อม SSL CA จาก certifi
+try:
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"ssl": {"ca": certifi.where()}},
+        pool_recycle=300,
+        pool_pre_ping=True
+    )
+except Exception as err:
+    engine = None
+    engine_init_error = str(err)
+else:
+    engine_init_error = None
 
 
 @app.route("/", methods=["GET"])
 def root():
-    return jsonify(
-        {
-            "service": "Ultimate Products REST API",
-            "status": "online",
-            "endpoints": {
-                "health": "/api/health",
-                "cron_keep_active": "/api/cron",
-                "products_list": "/api/products?limit=20&offset=0",
-                "product_detail": "/api/products/<order_id>",
-                "summary": "/api/summary",
-            },
+    return jsonify({
+        "service": "Ultimate Products REST API",
+        "status": "online",
+        "connected_db": DB_NAME,
+        "endpoints": {
+            "health": "/api/health",
+            "cron_keep_active": "/api/cron",
+            "products_list": "/api/products?limit=20&offset=0",
+            "product_detail": "/api/products/<order_id>",
+            "summary": "/api/summary"
         }
-    )
+    })
 
 
 @app.route("/api/health", methods=["GET"])
 def health():
+    if engine is None:
+        return jsonify({"status": "unhealthy", "error": engine_init_error}), 500
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return jsonify({"status": "healthy", "database": "connected"}), 200
+        return jsonify({"status": "healthy", "database": "connected", "db_user": DB_USER}), 200
     except Exception as e:
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
 
@@ -74,25 +88,24 @@ def health():
 @app.route("/api/cron", methods=["GET"])
 def cron_keep_active():
     """เส้น API สำหรับ Cron Job ยิงเพื่อรักษาความ Active ป้องกันระบบ Pause"""
+    if engine is None:
+        return jsonify({"status": "error", "error": engine_init_error}), 500
     try:
         with engine.connect() as conn:
             result = conn.execute(text("SELECT COUNT(*) FROM products")).scalar()
-        return (
-            jsonify(
-                {
-                    "status": "active",
-                    "message": "Keep-alive ping successful",
-                    "total_products_in_db": result,
-                }
-            ),
-            200,
-        )
+        return jsonify({
+            "status": "active",
+            "message": "Keep-alive ping successful",
+            "total_products_in_db": result
+        }), 200
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
 
 @app.route("/api/products", methods=["GET"])
 def get_products():
+    if engine is None:
+        return jsonify({"status": "error", "message": engine_init_error}), 500
     limit = min(int(request.args.get("limit", 20)), 100)
     offset = int(request.args.get("offset", 0))
     status = request.args.get("status")
@@ -126,46 +139,43 @@ def get_products():
             result = conn.execute(text(query), params)
             products = [dict(row._mapping) for row in result.fetchall()]
 
-        return (
-            jsonify(
-                {
-                    "status": "success",
-                    "total": total_filtered,
-                    "limit": limit,
-                    "offset": offset,
-                    "data": products,
-                }
-            ),
-            200,
-        )
+        return jsonify({
+            "status": "success",
+            "total": total_filtered,
+            "limit": limit,
+            "offset": offset,
+            "data": products
+        }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/api/products/<order_id>", methods=["GET"])
 def get_product_by_id(order_id):
+    if engine is None:
+        return jsonify({"status": "error", "message": engine_init_error}), 500
     try:
         with engine.connect() as conn:
             result = conn.execute(
                 text("SELECT * FROM products WHERE order_id = :order_id"),
-                {"order_id": order_id},
+                {"order_id": order_id}
             ).fetchone()
 
             if not result:
-                return (
-                    jsonify(
-                        {"status": "error", "message": "Product / Order not found"}
-                    ),
-                    404,
-                )
+                return jsonify({"status": "error", "message": "Product / Order not found"}), 404
 
-            return jsonify({"status": "success", "data": dict(result._mapping)}), 200
+            return jsonify({
+                "status": "success",
+                "data": dict(result._mapping)
+            }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/api/summary", methods=["GET"])
 def get_summary():
+    if engine is None:
+        return jsonify({"status": "error", "message": engine_init_error}), 500
     try:
         with engine.connect() as conn:
             total_count = conn.execute(text("SELECT COUNT(*) FROM products")).scalar()
@@ -173,16 +183,11 @@ def get_summary():
                 text("SELECT status, COUNT(*) as count FROM products GROUP BY status")
             ).fetchall()
 
-        return (
-            jsonify(
-                {
-                    "status": "success",
-                    "total_records": total_count,
-                    "status_distribution": {row[0]: row[1] for row in status_dist},
-                }
-            ),
-            200,
-        )
+        return jsonify({
+            "status": "success",
+            "total_records": total_count,
+            "status_distribution": {row[0]: row[1] for row in status_dist}
+        }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
